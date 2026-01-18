@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>ShiftTracker</title>
+
+<style>
+body{margin:0;font-family:system-ui;background:#0f172a;color:#e5e7eb}
+.wrap{max-width:1100px;margin:16px auto;padding:0 12px}
+.card{background:#111827cc;border:1px solid #1f2937;border-radius:16px;padding:16px}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:end}
+.label{font-size:12px;color:#94a3b8;margin-bottom:4px}
+input{background:#0b1020;color:#e5e7eb;border:1px solid #1f2937;padding:8px;border-radius:8px}
+input[readonly]{opacity:.7}
+.btn{border:0;cursor:pointer;padding:11px 16px;border-radius:12px;font-weight:600}
+.btn-start{background:#22c55e;color:#000}
+.btn-end{background:#fde047;color:#000}
+.btn-pdf{background:#38bdf8;color:#000}
+.btn-ghost{background:transparent;border:1px solid #1f2937;color:#e5e7eb}
+.btn-admin{background:#a855f7;color:#000}
+table{width:100%;border-collapse:collapse;margin-top:8px}
+th,td{border-bottom:1px solid #1f2937;padding:8px;font-size:14px}
+thead th{background:#0b1020}
+.sev{width:100%}
+.admin-edited{background:#78350f}
+.foreign-close{background:#7f1d1d}
+.hidden{display:none}
+</style>
+</head>
+
+<body>
+
+<!-- LOGIN -->
+<div id="loginBox" class="wrap">
+  <div class="card">
+    <h3>Вход</h3>
+    <input id="loginUser" placeholder="Логин"><br><br>
+    <input id="loginPass" type="password" placeholder="Пароль"><br><br>
+    <button class="btn btn-start" onclick="login()">Войти</button>
+    <div id="loginError"></div>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="appBox" class="hidden">
+<div class="wrap">
+<h1>Учёт рабочего времени</h1>
+
+<div class="card">
+  <div class="row">
+    <div>
+      <div class="label">Номер ТС</div>
+      <input id="truck" readonly>
+    </div>
+
+    <button class="btn btn-ghost" onclick="scanQR()">📷 QR</button>
+
+    <div style="flex:1"></div>
+
+    <button class="btn btn-start" onclick="openShift()">Открыть</button>
+    <button class="btn btn-end" onclick="closeShift()">Закрыть</button>
+    <button class="btn btn-pdf" onclick="showReport()">PDF</button>
+    <button class="btn btn-ghost" onclick="toggleJournal()">Журнал</button>
+    <button id="btnAdmin" class="btn btn-admin hidden" onclick="toggleAdmin()">Админ-режим</button>
+  </div>
+</div>
+
+<div id="currentShiftCard" class="card hidden" style="margin-top:16px">
+  <h3>Текущая смена</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Дата</th><th>ТС</th><th>Город открытия</th><th>Время открытия</th><th>SEV</th>
+      </tr>
+    </thead>
+    <tbody><tr id="currentShiftRow"></tr></tbody>
+  </table>
+</div>
+
+<div id="journalCard" class="card hidden" style="margin-top:16px">
+  <table>
+    <thead>
+      <tr>
+        <th>Дата</th><th>ТС</th><th>Открытие</th><th>Город</th>
+        <th>Закрытие</th><th>Город</th><th>Общее время</th><th>SEV</th>
+      </tr>
+    </thead>
+    <tbody id="journalBody"></tbody>
+  </table>
+</div>
+
+</div>
+</div>
+
+<script>
+/* ===== RESET (один раз) ===== */
+if(!localStorage.getItem('st_init')){
+  localStorage.clear();
+  localStorage.setItem('st_init','1');
+}
+
+/* ===== ROLES ===== */
+const ROLE_USER='user', ROLE_ADMIN='admin', ROLE_SUPERADMIN='superadmin';
+
+/* ===== STATE ===== */
+let state = JSON.parse(localStorage.getItem('shifttracker')||'{}');
+state.users ??= [
+  {login:'user1',pass:'1111',role:ROLE_USER,name:'Иванов И.И.',active:true},
+  {login:'admin',pass:'2222',role:ROLE_ADMIN,name:'Петров П.П.',active:true},
+  {login:'root',pass:'3333',role:ROLE_SUPERADMIN,name:'',active:true}
+];
+state.shifts ??= [];
+let currentShift=null;
+let currentUser=null;
+let adminMode=false;
+
+/* ===== HELPERS ===== */
+const save=()=>localStorage.setItem('shifttracker',JSON.stringify(state));
+const city=()=>['Москва','СПБ','Казань','Новосибирск'][Math.random()*4|0];
+const time=d=>d.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+
+/* ===== LOGIN ===== */
+function login(){
+  const u=loginUser.value.trim();
+  const p=loginPass.value;
+  const user=state.users.find(x=>x.login===u&&x.pass===p&&x.active);
+  if(!user){loginError.textContent='Ошибка входа';return;}
+  currentUser=user;
+  loginBox.classList.add('hidden');
+  appBox.classList.remove('hidden');
+  if(user.role!==ROLE_USER) btnAdmin.classList.remove('hidden');
+}
+
+/* ===== QR ===== */
+function scanQR(){ if(!currentShift) truck.value=prompt('№ ТС'); }
+
+/* ===== SHIFT ===== */
+function openShift(){
+  if(currentShift||!truck.value) return;
+  const d=new Date();
+  currentShift={
+    date:d.toLocaleDateString('ru-RU'),
+    truck:truck.value,
+    start:time(d),
+    cityS:city(),
+    sev:'',
+    openedBy:currentUser.name
+  };
+  renderCurrent();
+}
+
+function closeShift(){
+  if(!currentShift) return;
+  const d=new Date();
+  currentShift.end=time(d);
+  currentShift.cityE=city();
+  currentShift.closedBy=currentUser.name;
+  currentShift.closedByOther=currentShift.openedBy!==currentUser.name;
+  recalcTotal(currentShift);
+  currentShift.edits={};
+  state.shifts.unshift(currentShift);
+  currentShift=null;truck.value='';
+  renderCurrent();renderJournal();save();
+}
+
+/* ===== CURRENT ===== */
+function renderCurrent(){
+  if(!currentShift){currentShiftCard.classList.add('hidden');return;}
+  currentShiftCard.classList.remove('hidden');
+  currentShiftRow.innerHTML=`
+    <td>${currentShift.date}</td>
+    <td>${currentShift.truck}</td>
+    <td>${currentShift.cityS}</td>
+    <td>${currentShift.start}</td>
+    <td><input class="sev" value="${currentShift.sev}"></td>`;
+  currentShiftRow.querySelector('.sev').oninput=e=>currentShift.sev=e.target.value;
+}
+
+/* ===== JOURNAL ===== */
+function toggleJournal(){
+  journalCard.classList.toggle('hidden');
+  renderJournal();
+}
+
+function renderJournal(){
+  journalBody.innerHTML='';
+  state.shifts.forEach((s,i)=>{
+    const tr=document.createElement('tr');
+    if(s.closedByOther) tr.classList.add('foreign-close');
+    tr.innerHTML=`
+      ${cell(i,'date')}
+      ${cell(i,'truck')}
+      ${cell(i,'start')}
+      ${cell(i,'cityS')}
+      ${cell(i,'end')}
+      ${cell(i,'cityE')}
+      <td>${s.total||''}</td>
+      ${cell(i,'sev')}
+    `;
+    journalBody.appendChild(tr);
+  });
+}
+
+function cell(i,field){
+  const s=state.shifts[i];
+  const edited=s.edits?.[field];
+  if(adminMode){
+    const cls=(edited && currentUser.role!==ROLE_SUPERADMIN)?'admin-edited':'';
+    return `<td class="${cls}">
+      <input value="${s[field]||''}"
+        oninput="edit(${i},'${field}',this)">
+    </td>`;
+  }
+  return `<td class="${edited?'admin-edited':''}">${s[field]||''}</td>`;
+}
+
+window.edit=(i,field,input)=>{
+  const s=state.shifts[i];
+  const old=s[field], val=input.value;
+  if(old===val) return;
+  s[field]=val;
+  s.edits ??={};
+  if(currentUser.role!==ROLE_SUPERADMIN) s.edits[field]=true;
+  if(['start','end','date'].includes(field)) recalcTotal(s);
+  save();
+};
+
+/* ===== TOTAL ===== */
+function recalcTotal(s){
+  if(!s.start||!s.end) return;
+  let [h1,m1]=s.start.split(':').map(Number);
+  let [h2,m2]=s.end.split(':').map(Number);
+  let min=(h2*60+m2)-(h1*60+m1);
+  if(min<0) min+=1440;
+  s.total=Math.floor(min/60)+' ч '+String(min%60).padStart(2,'0')+' мин';
+}
+
+/* ===== ADMIN MODE ===== */
+function toggleAdmin(){
+  adminMode=!adminMode;
+  btnAdmin.textContent=adminMode?'Режим пользователя':'Админ-режим';
+  renderJournal();
+}
+
+/* ===== REPORT ===== */
+function showReport(){
+  alert('PDF отчёт будет сформирован автоматически');
+}
+</script>
+</body>
+</html>
